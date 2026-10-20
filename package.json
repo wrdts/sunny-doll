@@ -1,0 +1,19 @@
+{
+  "name": "sunny-doll",
+  "version": "1.0.0",
+  "description": "晴天娃娃 —— 挂在鼠标指针下方、跟随摇晃的桌面小挂件（Electron 透明置顶窗口）",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node rope.test.cjs",
+    "verify": "node verify.cjs",
+    "pack": "electron . --check-only"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0"
+  },
+  "allowScripts": {
+    "electron@33.4.11": true
+  }
+}

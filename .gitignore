@@ -1,0 +1,19 @@
+# 依赖
+node_modules/
+
+# 临时调试脚本与截图
+_*.cjs
+_*.js
+_*.png
+_*.txt
+_full.png
+_static.png
+
+# 系统文件
+Thumbs.db
+desktop.ini
+_el.err
+_el.out
+
+# 挂饰图（用户私有数据，不入库；面板导入时自动生成）
+assets/dangles/

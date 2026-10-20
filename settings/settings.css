@@ -1,0 +1,412 @@
+/* 设置面板样式。深色底、高对比，和透明覆盖层完全无关 —— 这是个普通窗口。 */
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #16181d;
+  color: #e6e9f0;
+  font-family: "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 13px;
+  /* 面板里要能选中文字，和覆盖层的 pointer-events: none 相反 */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;   /* 页面本身不滚，滚动交给 .groups */
+}
+
+.head {
+  padding: 18px 22px 12px;
+  border-bottom: 1px solid #262a33;
+  flex: none;
+}
+.head h1 {
+  margin: 0 0 5px;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+.sub {
+  margin: 0;
+  color: #8b93a5;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ---------- 预设 ---------- */
+.preset-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 22px;
+  border-bottom: 1px solid #262a33;
+  flex: none;
+  flex-wrap: wrap;
+}
+.preset-label {
+  color: #8b93a5;
+  font-size: 12px;
+  flex: none;
+}
+/* ===== 下拉选择 + 自定义图片导入（第 17 轮） ===== */
+.field select.choice {
+  width: 100%;
+  margin-top: 6px;
+  padding: 7px 9px;
+  background: #1c2333;
+  color: #e8ecf4;
+  border: 1px solid #3a4560;
+  border-radius: 8px;
+  font: inherit;
+}
+.import-row {
+  display: block;
+}
+.import-row .label-text {
+  font-weight: 600;
+}
+.import-btns {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0 4px;
+}
+.import-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid #c9d2dd;
+  border-radius: 6px;
+  font: inherit;
+}
+
+.dangle-lib {
+  margin-top: 10px;
+}
+.lib-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 6px 0 4px;
+}
+.lib-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.lib-thumb {
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+  border: 1px solid #c9d2dd;
+  border-radius: 6px;
+  background: #fff;
+  flex: 0 0 auto;
+}
+.lib-name {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.lib-btn {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+}
+.lib-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.lib-del:hover {
+  color: #b23;
+  border-color: #b23;
+}
+.lib-empty {
+  margin: 4px 0;
+}
+.import-thumb {
+  display: block;
+  max-height: 72px;
+  max-width: 180px;
+  border-radius: 8px;
+  margin: 6px 0;
+}
+
+/* 档位说明独占一行，否则滑条一宽就会把说明挤到奇怪的位置 */
+.preset-hint {
+  flex: 1 0 100%;
+  margin: 2px 0 0;
+  color: #79808f;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+/* 七档 = 一根滑动条。thumb 落点即档位；颜色三态与原 chip 语义一致：
+   is-selected = 拖到但还没应用（描边蓝）、is-active = 已生效（蓝色 thumb） */
+.preset-slider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.preset-end {
+  color: #8b93a5;
+  font-size: 11.5px;
+  flex: none;
+  white-space: nowrap;
+}
+#preset-range {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+#preset-range.is-selected::-webkit-slider-thumb {
+  background: #6ea8f0;
+  box-shadow: 0 0 0 3px rgba(110, 168, 240, 0.28);
+}
+#preset-range.is-active::-webkit-slider-thumb {
+  background: #2f6fd0;
+}
+#preset-range.is-active:hover::-webkit-slider-thumb {
+  background: #3a7de0;
+}
+/* ---------- 标签页 ---------- */
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 22px 0;
+  border-bottom: 1px solid #262a33;
+  flex: none;
+  background: #14161b;
+}
+.tab {
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #8b93a5;
+  font-size: 12.5px;
+  font-family: inherit;
+  padding: 7px 14px 8px;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+}
+.tab:hover { color: #cfd6e4; }
+.tab.active {
+  color: #fff;
+  border-bottom-color: #6ea8f0;
+}
+
+/* ---------- 参数组 ---------- */
+.groups {
+  flex: 1 1 auto;
+  /* flex 子项的 min-height 默认是 auto，不加这行它就会被内容撑开、拒绝收缩，
+     于是滚动条跑到整页上、页脚被顶出屏幕。这一行是"页脚永远可见"的关键。 */
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 22px 18px;
+}
+
+.group {
+  padding: 14px 0 4px;
+  border-bottom: 1px solid #22262e;
+}
+.group:last-child { border-bottom: none; }
+
+.group h2 {
+  margin: 0 0 3px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #cfd6e4;
+}
+.group .note {
+  margin: 0 0 12px;
+  color: #79808f;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.field {
+  padding: 9px 0 11px;
+}
+.field.overridden .label-text::after {
+  content: "已改";
+  margin-left: 7px;
+  font-size: 10px;
+  color: #6ea8f0;
+  border: 1px solid #35507a;
+  border-radius: 3px;
+  padding: 1px 4px;
+  vertical-align: 1px;
+}
+
+.field-top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.label-text {
+  color: #dfe4ee;
+  font-size: 12.5px;
+}
+.value {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: #8fc0ff;
+  font-size: 12.5px;
+  font-family: Consolas, "Courier New", monospace;
+}
+.readout {
+  color: #79808f;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+}
+
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 20px;
+  background: transparent;
+  cursor: pointer;
+  margin: 0;
+  display: block;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  background: #2c313c;
+  border-radius: 2px;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #6ea8f0;
+  border: none;
+  margin-top: -5px;
+  transition: background 0.12s;
+}
+input[type="range"]:hover::-webkit-slider-thumb { background: #8fc0ff; }
+input[type="range"]:active::-webkit-slider-thumb { background: #a9d0ff; }
+
+.hint {
+  margin: 5px 0 0;
+  color: #6d7482;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+/* ---------- 诊断记录 ---------- */
+/* 和 .head / .foot 一样是 flex:none 的固定块，只有 .groups 滚动，
+   所以这一块永远不会被参数列表挤到屏幕外。 */
+.recorder {
+  flex: none;
+  padding: 12px 22px 14px;
+  border-top: 1px solid #262a33;
+  background: #1a1d24;
+}
+.recorder-top {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 5px;
+}
+.recorder-title {
+  color: #cfd6e4;
+  font-size: 13px;
+  font-weight: 600;
+}
+.recorder-state {
+  margin-left: auto;
+  color: #8fc0ff;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.recorder-hint {
+  margin: 0 0 9px;
+  color: #6d7482;
+  font-size: 11px;
+  line-height: 1.55;
+}
+.recorder-hint code {
+  color: #8b93a5;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 10.5px;
+}
+.recorder-btns {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.btn.rec {
+  background: #2a3a52;
+  color: #cfe0ff;
+  border-color: #35507a;
+}
+.btn.rec:hover { background: #33465f; border-color: #4a6f9e; }
+/* 正在录 = 红点 + 红框，一眼能看出"现在是它在写盘" */
+.btn.rec.recording {
+  background: #4a2230;
+  border-color: #a33a52;
+  color: #ffd4dd;
+}
+.btn.rec.recording:hover { background: #5a2a3a; border-color: #c94863; }
+.recorder-file {
+  color: #6d7482;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* ---------- 底部 ---------- */
+.foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 22px;
+  border-top: 1px solid #262a33;
+  background: #171a20;
+  flex: none;
+}
+.status {
+  flex: 1 1 auto;
+  color: #6d7482;
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.btn {
+  border-radius: 6px;
+  padding: 7px 16px;
+  font-size: 12.5px;
+  font-family: inherit;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.12s, border-color 0.12s;
+  flex: none;
+}
+.btn.primary {
+  background: #2f6fd0;
+  color: #fff;
+}
+.btn.primary:hover { background: #3a7de0; }
+.btn.primary:disabled {
+  background: #2a3a52;
+  color: #6d7a8c;
+  cursor: default;
+}
+.btn.primary:disabled:hover { background: #2a3a52; }
+.btn.ghost {
+  background: transparent;
+  color: #a8b0c0;
+  border-color: #343a47;
+}
+.btn.ghost:hover { background: #22262e; border-color: #4a5263; }

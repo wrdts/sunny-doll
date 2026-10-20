@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" />
+  <title>晴天娃娃 · 设置</title>
+  <link rel="stylesheet" href="settings.css" />
+</head>
+<body>
+  <header class="head">
+    <h1>晴天娃娃 · 设置</h1>
+    <p class="sub">选一个档位再点「应用」，或者直接拖滑块微调。改动会自动记住，下次开机还在。</p>
+  </header>
+
+
+  <nav id="tabs" class="tabs">
+    <button type="button" class="tab active" data-tab="image">图片</button>
+    <button type="button" class="tab" data-tab="cursor">挂点与绳索</button>
+    <button type="button" class="tab" data-tab="physics">物理</button>
+  </nav>
+  <section class="preset-bar">
+    <span class="preset-label">档位</span>
+    <div id="presets" class="preset-slider">
+      <span id="preset-min-label" class="preset-end"></span>
+      <input id="preset-range" type="range" min="1" max="7" step="1" value="4" />
+      <span id="preset-max-label" class="preset-end"></span>
+    </div>
+    <p id="preset-hint" class="preset-hint"></p>
+  </section>
+
+  <main id="groups" class="groups"></main>
+
+  <section class="recorder">
+    <div class="recorder-top">
+      <span class="recorder-title">诊断记录</span>
+      <span id="record-status" class="recorder-state"></span>
+    </div>
+    <p class="recorder-hint">
+      每 0.1 秒记一条：绳子每个节点的位置与速度、夹在绳端的熊受到的合力、娃娃实际画出去的角度。
+      手感不对劲时先开录，出问题后停止，就能对着数据看"刚才那一下"到底发生了什么。
+      文件存在 <code>%APPDATA%\sunny-doll\records\</code>，一条样本一行，可直接用编辑器打开。
+    </p>
+    <div class="recorder-btns">
+      <button id="record-toggle" class="btn rec" type="button">开始记录</button>
+      <span id="record-file" class="recorder-file"></span>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <button id="reset-all" class="btn ghost" type="button">恢复出厂默认</button>
+    <button id="apply" class="btn primary" type="button" disabled>应用</button>
+    <span id="status" class="status"></span>
+    <button id="close" class="btn ghost" type="button">关闭</button>
+  </footer>
+
+  <!-- 先读参数定义，再读 config.js 拿到真实出厂默认值，最后是面板逻辑 -->
+  <script src="../settings-schema.js"></script>
+  <script src="../renderer/config.js"></script>
+  <script src="settings.js"></script>
+</body>
+</html>

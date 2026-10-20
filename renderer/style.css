@@ -1,0 +1,28 @@
+/* 整个页面完全透明，只有 canvas 上的像素会被合成到桌面上 */
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  /* 关键：不能有任何背景色，否则透明窗口会变成一块白板 */
+  -webkit-user-select: none;
+  user-select: none;
+  /* 让鼠标事件（如果万一没穿透）也不选中/拖动任何东西 */
+  pointer-events: none;
+  /* 用自绘指针替代系统指针 */
+  cursor: none;
+}
+
+#stage {
+  display: block;
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  pointer-events: none;
+  cursor: none;
+}
