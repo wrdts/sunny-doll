@@ -32,6 +32,16 @@ contextBridge.exposeInMainWorld("settingsApi", {
     return ipcRenderer.invoke("settings:pick-image");
   },
 
+  /** 读挂饰库内的一张图，返回 { ok, dataUrl }（面板缩略图画吊环标记用） */
+  readImage(p) {
+    return ipcRenderer.invoke("settings:read-image", { path: p });
+  },
+
+  /** 覆盖层窗口的 CSS 尺寸，返回 { ok, width, height }（算挂饰真实像素尺寸用） */
+  viewport() {
+    return ipcRenderer.invoke("settings:viewport");
+  },
+
   /** 删除挂饰库文件（主进程只放行 assets/dangles 目录内的路径） */
   deleteDangle(p) {
     return ipcRenderer.invoke("settings:delete-dangle", p);

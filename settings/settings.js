@@ -15,21 +15,35 @@
   const S = window.SettingsSchema;
   const DEFAULTS = window.CONFIG;        // config.js 里的出厂值（只读，用来显示"出厂 xx"）
 
+  // 第 36 轮 m12389：底栏不再是全局唯一的一条，而是每个标签页各一条「悬挂栏」。
+  // 按钮和状态文本每页都有一份，所以下面这些 getter 一律「按当前激活的页」取，
+  // 页面切走后旧按钮仍然存在（只是 display:none），绝不能把它当成唯一实例。
   const els = {
     groups: document.getElementById("groups"),
     presetRange: document.getElementById("preset-range"),
     presetMinLabel: document.getElementById("preset-min-label"),
     presetMaxLabel: document.getElementById("preset-max-label"),
     presetHint: document.getElementById("preset-hint"),
-    tabs: document.getElementById("tabs"),
-    status: document.getElementById("status"),
-    resetAll: document.getElementById("reset-all"),
-    apply: document.getElementById("apply"),
-    close: document.getElementById("close"),
-    recordToggle: document.getElementById("record-toggle"),
-    recordStatus: document.getElementById("record-status"),
-    recordFile: document.getElementById("record-file")
+    tabs: document.getElementById("tabs")
   };
+
+  /** 当前页面的悬挂栏；图片页没有，返回 null */
+  function dockOf(tab) {
+    return document.querySelector('.foot.dock[data-dock="' + (tab || activeTab) + '"]');
+  }
+  /** 所有页面的悬挂栏（两页都有，图片页没有） */
+  function allDocks() {
+    return Array.prototype.slice.call(document.querySelectorAll(".foot.dock"));
+  }
+  /** 某个按钮在某一页里的实例（可能不存在） */
+  function dockBtn(tab, name) {
+    const d = dockOf(tab);
+    return d ? d.querySelector('[data-btn="' + name + '"]') : null;
+  }
+  function statusEl(tab) {
+    const d = dockOf(tab);
+    return d ? d.querySelector("[data-status]") : null;
+  }
 
   // 界面上正在显示的值（嵌套）：{physics:{gravity:1800}}。空 = 全部用出厂值。
   // 必须是嵌套形状 —— S.getAt / S.setAt 都是按点分路径在嵌套对象上走的。
@@ -44,18 +58,28 @@
   const controls = {};
 
   let statusTimer = null;
+  /** 提示文本写到每一条悬挂栏里 —— 用户可能停在任意一页，提示不能只出现在其中一条 */
   function setStatus(text, sticky) {
-    els.status.textContent = text;
+    for (const d of allDocks()) {
+      const el = d.querySelector("[data-status]");
+      if (el) el.textContent = text;
+    }
     if (statusTimer) { clearTimeout(statusTimer); statusTimer = null; }
     if (!sticky && text) {
-      statusTimer = setTimeout(() => { els.status.textContent = ""; statusTimer = null; }, 2600);
+      statusTimer = setTimeout(() => { setStatus(""); }, 2600);
     }
   }
 
   // ---------- 读数换算 ----------
   // 面板上显示的派生量必须和真实物理一致，所以这里复刻的是
   // verify.cjs 的 chainPendulumPeriod 与 rope.js 的耗散模型，不是随手估的。
-  const SCREEN_H = window.screen && window.screen.height ? window.screen.height : 864;
+  // 覆盖层窗口的 CSS 高度。
+// 第 22 轮 m09043：原来用 window.screen.height，那是【显示器】高度，而 renderer/doll.js
+// 的 dollHeight 走的是覆盖层 innerHeight（有任务栏时矮几十像素）—— 两处不一致会让
+// 「图片偏移」读数与线上实际位置差半张图。启动时通过 IPC 换成覆盖层的真实 contentBounds，
+// 拿不到就退回屏幕高（差不影响使用，只是读数略偏）。
+let SCREEN_H = window.screen && window.screen.height ? window.screen.height : 864;
+let viewportSynced = false;
 
   function val(key, fallback) {
     const v = S.getAt(overrides, key);
@@ -91,9 +115,31 @@
     const r = DEFAULTS.rope;
     return Math.min(r.max, Math.max(r.min, SCREEN_H * val("rope.lengthRatio", r.lengthRatio)));
   }
+  /**
+   * 用覆盖层的真实 CSS 高度校准 SCREEN_H，然后刷新所有依赖它的读数与预览。
+   * 只做一次：窗口尺寸变了覆盖层自己会 resize，但面板不会收到通知，
+   * 所以顺序是「先同步再 renderAnchor」，不能反过来。
+   */
+  function syncViewport() {
+    if (viewportSynced || !window.settingsApi || !window.settingsApi.viewport) return;
+    viewportSynced = true;
+    window.settingsApi.viewport().then(function (r) {
+      if (r && r.ok && r.height > 0) {
+        SCREEN_H = r.height;
+        refreshReadouts();
+        renderAnchor();
+      }
+    }).catch(function () {});
+  }
+
   function dollPx() {
     const d = DEFAULTS.doll;
     return Math.min(d.heightMax, Math.max(d.heightMin, SCREEN_H * val("doll.heightRatio", d.heightRatio)));
+  }
+
+  /** 图片按原始宽高比缩放后的宽度；emoji 没有固有比例，退回成方的 */
+  function dollWidth() {
+    return dollPx();
   }
 
   function computeReadout(field) {
@@ -109,7 +155,15 @@
       return "停手后约 " + decayTau(k, g, ropePx()).toFixed(1) + " 秒衰减完";
     }
     if (field.readout === "dollPx") return "≈ " + dollPx().toFixed(0) + " px 高";
+    if (field.readout === "pct") {
+      // T1 的挂点位置：面板上显示 0~100%，比 0.5 好读，也顺带说明「这是比例不是像素」
+      const v = val(field.key, 0.5);
+      const px = (field.key === "doll.anchorX")
+        ? (v - 0.5) * dollWidth() : -v * dollPx();
+      return (v * 100).toFixed(0) + "%  （" + (px >= 0 ? "+" : "") + px.toFixed(0) + " px）";
+    }
     if (field.readout === "ropePx") return "≈ " + ropePx().toFixed(0) + " px 长";
+    // T3（第 25 轮）：皮肤滞后时间。0 时给一句「关闭」，比显示 0s 好读。
     return "";
   }
 
@@ -152,12 +206,15 @@
     }
     const empty = document.getElementById("tab-empty");
     if (empty) empty.style.display = id === "image" ? "" : "none";
-    // 档位滑条与诊断记录归属「物理」页（第 17 轮，m05426）
+    // 档位滑条归属「物理」页（第 17 轮 m05426）
     const presetBar = document.querySelector(".preset-bar");
-    const recorder = document.querySelector(".recorder");
     const showExtras = id === "physics";
     if (presetBar) presetBar.style.display = showExtras ? "" : "none";
-    if (recorder) recorder.style.display = showExtras ? "" : "none";
+    // 第 36 轮 m12389：每页一条悬挂栏，只显示当前页那条。
+    // 诊断记录已挪进「物理」页 section 内部，跟着 section 一起显隐，这里不再管它。
+    for (const d of allDocks()) {
+      d.style.display = d.dataset.dock === id ? "" : "none";
+    }
   }
 
   // ---------- 构建界面 ----------
@@ -194,13 +251,33 @@
       }
 
       for (const f of g.fields) {
+        // CHOICES 是给 sanitize 用的极简形状（{key, values}），面板这边补中文标签
+        if (f.type === "choice" && !f.options) f.options = choiceOptions(f);
         host.appendChild(buildField(f));
       }
       if (g.id === "appearance") {
+        const ae = buildAnchorEditor();
+        if (ae) host.appendChild(ae);
         host.appendChild(buildImportRow());
         host.appendChild(buildLibrary());
       }
     }
+    // 第 36 轮 m12389：诊断记录从全局底栏挪回「物理」页末尾的常规区域。
+    // 模板放在 settings.html 的 <template> 里，这里克隆一份塞进物理页 section，
+    // 这样每页各有一条悬挂栏、记录块跟着物理页一起显隐，互不干扰。
+    const tpl = document.getElementById("tpl-recorder");
+    if (tpl && tabSections.physics && window.HTMLTemplateElement && tpl instanceof window.HTMLTemplateElement) {
+      tabSections.physics.appendChild(tpl.content.cloneNode(true));
+    } else if (tpl && tabSections.physics) {
+      tabSections.physics.appendChild(tpl.content ? tpl.content.cloneNode(true) : tpl.cloneNode(true));
+    }
+    // 克隆后才有 #record-toggle 等节点，引用要在这里重新取。
+    // 第 36 轮 m12389：模板克隆失败时这几个会是 null，后面所有记录逻辑都必须
+    // 先判空 —— 否则面板会在启动时抛 TypeError、整页按钮全都不响应。
+    els.recordToggle = document.getElementById("record-toggle");
+    els.recordStatus = document.getElementById("record-status");
+    els.recordFile = document.getElementById("record-file");
+
     switchTab(activeTab);
   }
 
@@ -258,6 +335,7 @@
     refreshReadouts();
     refreshDangleSelect();
     if (importEls) refreshImportRow();
+    renderAnchor();   // 【第 39 轮】预览区图片随下拉选择一起换
   }
 
   /** 重建挂饰下拉 options（保存新挂饰后调用） */
@@ -293,6 +371,31 @@
     }
   }
 
+  /**
+   * 把 schema 里的 choice 字段统一成 [{v,label}]。
+   * schema 的 CHOICES 是 {key, values:["off","on"]} 这种极简形状（为了给 sanitize 用），
+   * 面板这边负责翻成中文标签。doll.dangle 的选项是动态的（挂饰库），由调用方另行覆盖。
+   */
+  const CHOICE_LABELS = {};
+  /**
+   * 一个 choice 字段能选什么。两个来源，按优先级：
+   *   · f.options 是数组 —— 面板自己补的（如 doll.dangle 的挂饰库，随时会变）
+   *   · 否则去 schema 的 CHOICES 里按 key 查 values —— 这是唯一定义处。
+   * 字段本身不带 values：CHOICES 是 {key, values} 的独立表，跟着 key 走，
+   * 不在字段对象上。早先只读 f.values，choice 字段就会拿到空数组
+   * （opts[0] 是 undefined，sel.value 那行抛 TypeError）。
+   */
+  function choiceOptions(f) {
+    if (Array.isArray(f.options)) return f.options;
+    let vals = f.values;
+    if (!Array.isArray(vals)) {
+      const hit = (S.CHOICES || []).find((c) => c.key === f.key);
+      vals = hit && Array.isArray(hit.values) ? hit.values : [];
+    }
+    const map = CHOICE_LABELS[f.key] || {};
+    return vals.map((v) => ({ v: v, label: map[v] || v }));
+  }
+
   /** 下拉选择字段（如挂饰 emoji/image）。不走数值滑块那套 refreshField。 */
   function buildChoiceField(f) {
     const wrap = document.createElement("div");
@@ -311,7 +414,8 @@
 
     const sel = document.createElement("select");
     sel.className = "choice";
-    for (const o of f.options) {
+    const opts = choiceOptions(f);
+    for (const o of opts) {
       const opt = document.createElement("option");
       opt.value = o.v;
       opt.textContent = o.label;
@@ -320,7 +424,7 @@
     if (f.key === "doll.dangle") {
       sel.addEventListener("change", () => applyDangleValue(sel.value));
     } else {
-      sel.value = sval(f.key, f.options[0].v);
+      sel.value = sval(f.key, opts[0].v);
       sel.addEventListener("change", () => {
         S.setAt(overrides, f.key, sel.value);
         selectedPresetId = null;
@@ -411,21 +515,18 @@
     if (!importEls) return;
     const name = (importEls.nameInput.value || "").trim();
     if (!name) { setStatus("请先输入挂饰名称", true); importEls.nameInput.focus(); return; }
-    const path = S.getAt(overrides, "doll.image.path");
+    const path = importEls.pendingPath;
     if (typeof path !== "string" || !path) { setStatus("请先导入图片", true); return; }
     const list = readDangleList();
     const existing = list.findIndex((x) => x.path === path);
     if (existing >= 0) list[existing].name = name; else list.push({ name, path });
     writeDangleList(list);
-    S.setAt(overrides, "doll.dangle", "image");
-    S.setAt(overrides, "doll.image.path", path);
-    S.setAt(overrides, "doll.dangleName", name);
-    selectedPresetId = null;
-    pendingSend = S.toFlat(overrides);
-    push(pendingSend, () => {
-      importEls.nameInput.value = "";
-      setStatus("已保存挂饰「" + name + "」并应用");
-    });
+    // 【第 39 轮，m13485】保存只入库、不切换实际挂饰 —— 切换统一走挂饰下拉框选择。
+    importEls.pendingPath = null;
+    importEls.dataUrl = null;
+    importEls.nameInput.value = "";
+    setStatus("已保存挂饰「" + name + "」，在「挂饰」下拉框中选择即可使用");
+    refreshDangleSelect();
     refreshDangleSelect();
     refreshLibrary();
     refreshImportRow();
@@ -441,7 +542,9 @@
     } else {
       importEls.thumb.style.display = "none";
     }
-    if (dangle !== "image") {
+    if (importEls.dataUrl && importEls.pendingPath) {
+      importEls.cur.textContent = "新图已导入，尚未入库 —— 输入名称点「保存挂饰」，再到「挂饰」下拉框选择";
+    } else if (dangle !== "image") {
     importEls.cur.textContent = "当前：自带小熊 🧸（用上方「挂饰」下拉切换）";
     } else if (!p) {
       importEls.cur.textContent = "当前：未导入（先点「导入图片…」，期间显示小熊）";
@@ -471,17 +574,294 @@
         if (res && res.error) setStatus("导入失败：" + res.error, true);
         return;
       }
-      S.setAt(overrides, "doll.dangle", "image");
-      S.setAt(overrides, "doll.image.path", res.path);
-      selectedPresetId = null;
-      if (importEls) importEls.dataUrl = res.dataUrl;
-      pendingSend = S.toFlat(overrides);
-      push(pendingSend, () => setStatus("已应用自定义图片"));
-      refreshReadouts();
+      // 【第 39 轮，m13485】导入不再自行切换挂饰：只把图放进「待保存」状态
+      // （缩略图 + 名称输入框），实际挂饰与预览区都要等「保存」入库后在
+      // 挂饰下拉框里选择才切换。
+      if (importEls) { importEls.dataUrl = res.dataUrl; importEls.pendingPath = res.path; }
       refreshImportRow();
     } catch (e) {
       setStatus("导入失败", true);
     }  }
+
+  // ---------- 吊环位置编辑器（第 22 轮，m08506）----------
+  // 取代原先 doll.anchorX / doll.anchorY 两个滑块。左侧缩略图 + 吊环标记（看得见），
+  // 右侧四向微调（0.01 一档）。值仍走同一条 settings:set 链路。
+  //
+  // 缩略图的来源按优先级：
+  //   1) 当前挂饰是自定义图片 -> 让主进程读回 dataUrl（只放行 assets/dangles）
+  //   2) 否则                 -> 画 emoji，用一个和线上同比例的比例矩形
+  let anchorEls = null;
+  let anchorImg = null;
+  let anchorImgPath = null;
+  // 第 35 轮 m12277：预览里当前被选中的标记，"hook"（挂点/蓝）或 "mass"（质点/红）。
+  // 这个选择**不落盘**（不进 settings.json）—— 它只是面板的交互状态。
+  let anchorTarget = "hook";
+
+
+  // 自带小熊的字模包围盒宽高比。第 22 轮从 1.0 改成实测值：
+  // 原来按 1:1 算，而线上 renderer/doll.js 的 _dollWidth() 用的是
+  // (m.right - m.left) * (h / m.h)。第 23 轮 m09384 修：原来写 (m.left + m.right)，
+  // 只有字形左右对称时才等于真实宽度；本机 Segoe UI Emoji 是 left=-18 / right=119，
+  // 两个式子差 36%（101 vs 137），读数与线上的比例尺整体差一截。
+  // 这个常数只是 calibrateEmojiAspect() 失败时的兜底，正常路径会用量出来的值覆盖它。
+  var EMOJI_ASPECT = 1.37;
+
+  function anchorValue() {
+    // 兜底值与 renderer/config.js 的出厂值保持一致（第 23 轮 m09384 起是 0 / 0）
+    return { x: val("doll.anchorX", 0.0), y: val("doll.anchorY", 0.0) };
+  }
+
+  /** 第 35 轮 m12277：质点位置。默认居中（与 anchor-editor.js 的 MASS_DEFAULTS 一致） */
+  function massValue() {
+    return { x: val("doll.massX", 0.5), y: val("doll.massY", 0.5) };
+  }
+
+  /** 线上的真实尺寸：与 renderer/doll.js 的 _dollWidth / dollHeight 同一套算法 */
+  function anchorRealSize() {
+    const h = dollPx();
+    if (sval("doll.dangle", "emoji") === "image" && anchorImg && anchorImg.complete && anchorImg.naturalWidth > 0) {
+      return { w: h * (anchorImg.naturalWidth / anchorImg.naturalHeight), h: h };
+    }
+    return { w: h * EMOJI_ASPECT, h: h };
+  }
+
+  /**
+   * 挂饰模拟段长度（第 37 轮 m12496）。
+   * 不再由面板滑块直接给，而是「挂点 ↔ 质点」在挂饰上的真实像素距离：
+   *   dx = (massX - anchorX) * 挂饰宽
+   *   dy = (massY - anchorY) * 挂饰高
+   *   len = hypot(dx, dy)
+   * 这样拖预览图上的两个点，长度自然跟着变，只有一个真相源。
+   * 与 renderer/doll.js 的 massOffset 用的是同一套坐标系（左上角原点、CSS 像素）。
+   */
+  function tailLengthFromPoints() {
+    const hook = anchorValue();
+    const mass = massValue();
+    const size = anchorRealSize();
+    const dx = (mass.x - hook.x) * size.w;
+    const dy = (mass.y - hook.y) * size.h;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (!isFinite(len)) return 0;
+    // 拖到 0 时 rope.js 会当成「没有模拟段」（质点数少一个），手感会突然跳一下。
+    // 留 1px 下限，维持成「有效但极短」。上限 200 与 settings-schema 的 ANCHOR_FIELDS 一致。
+    return Math.max(1, Math.min(200, Math.round(len * 10) / 10));
+  }
+
+  /**
+   * 【第 38 轮补，m13415】挂点→质点的初始方向角，与 rope.tailAngle 同一约定：
+   * atan2(dx, dy) —— 竖直向下 = 0，顺时针为正，单位弧度。
+   * dx/dy 必须用真实像素（乘 anchorRealSize），不能用归一化差值直接算 atan2 ——
+   * 图片宽高不等时归一化 45° 不等于像素 45°，预览区与实际挂件就对不上了。
+   * 「应用」时随 chain.tail.angle 一起下发；覆盖层据此摆放模拟段末端的初始位置。
+   */
+  function tailAngleFromPoints() {
+    const hook = anchorValue();
+    const mass = massValue();
+    const size = anchorRealSize();
+    const dx = (mass.x - hook.x) * size.w;
+    const dy = (mass.y - hook.y) * size.h;
+    const a = Math.atan2(dx, dy);
+    return isFinite(a) ? a : 0;
+  }
+
+  /**
+   * 用一张临时 canvas 量出自带 emoji 的真实宽高比，写回 EMOJI_ASPECT。
+   * 不这么做就只能猜一个常数；而 EMOJI_ASPECT 直接决定读数里的像素偏移，
+   * 猜错就会跟线上差半张图。量法与 renderer/doll.js 的 _measureEmoji + _dollWidth 一致：
+   *   w = (m.actualBoundingBoxRight - m.actualBoundingBoxLeft) * (h / (m.ascent + m.descent))
+   * 第 23 轮 m09384：原来是 (left + right)，只在字形左右对称时才等于真实宽度，已改。
+   */
+  function calibrateEmojiAspect() {
+    try {
+      const ch = DEFAULTS.doll.emoji || "\uD83E\uDDF8";
+      const cv = document.createElement("canvas");
+      const ctx = cv.getContext("2d");
+      if (!ctx) return;
+      const SIZE = 100;
+      ctx.font = SIZE + "px \"Segoe UI Emoji\", \"Apple Color Emoji\", \"Noto Color Emoji\", sans-serif";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "alphabetic";
+      const m = ctx.measureText(ch);
+      const ascent = m.actualBoundingBoxAscent || SIZE * 0.8;
+      const descent = m.actualBoundingBoxDescent || SIZE * 0.2;
+      const left = m.actualBoundingBoxLeft || 0;
+      const right = m.actualBoundingBoxRight || m.width;
+      const h = Math.max(ascent + descent, 1);
+      // 第 23 轮 m09384 修：与 renderer/doll.js 的 _dollWidth() 用同一个定义。
+      // 字模横向占 m.left..m.right，真实宽度是 (right - left)；
+      // 写成 (left + right) 只在字形左右对称时才对。
+      const ratio = (right - left) / h;
+      if (ratio > 0.2 && ratio < 5) EMOJI_ASPECT = ratio;
+    } catch (e) { /* 量不出来就用常数 1.15 */ }
+  }
+
+  /**
+   * 与 renderer/doll.js 的 _measureEmoji 逐字对应地量字模包围盒。
+   * 线上 emoji 分支不用 _dollWidth 去画，而是用这套度量算 leftEdge/rightEdge/ascent，
+   * 所以预览也必须用同一套，否则「显示的挂点」会落在图片框上而「实际挂点」落在字模上。
+   */
+  let emojiMetricsCache = null;
+  function emojiMetrics() {
+    const ch = DEFAULTS.doll.emoji || "\uD83E\uDDF8";
+    if (emojiMetricsCache && emojiMetricsCache.ch === ch) return emojiMetricsCache;
+    try {
+      const cv = document.createElement("canvas");
+      const ctx = cv.getContext("2d");
+      if (!ctx) return null;
+      const SIZE = 100;
+      ctx.font = SIZE + "px \"Segoe UI Emoji\", \"Apple Color Emoji\", \"Noto Color Emoji\", sans-serif";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "alphabetic";
+      const m = ctx.measureText(ch);
+      const ascent = m.actualBoundingBoxAscent || SIZE * 0.8;
+      const descent = m.actualBoundingBoxDescent || SIZE * 0.2;
+      const left = m.actualBoundingBoxLeft || 0;
+      const right = m.actualBoundingBoxRight || m.width;
+      emojiMetricsCache = { ch: ch, size: SIZE, ascent: ascent, descent: descent, left: left, right: right, h: Math.max(ascent + descent, 1) };
+      return emojiMetricsCache;
+    } catch (e) { return null; }
+  }
+
+  function anchorSource() {
+    const real = anchorRealSize();
+    if (sval("doll.dangle", "emoji") === "image" && anchorImg && anchorImg.complete && anchorImg.naturalWidth > 0) {
+      return {
+        kind: "image", img: anchorImg,
+        w: anchorImg.naturalWidth, h: anchorImg.naturalHeight,
+        realW: real.w, realH: real.h
+      };
+    }
+    const m2 = emojiMetrics();
+    return {
+      // w/h 是字模包围盒的真实宽高，交给 fit() 定预览里的宽高比。
+      // 宽 = right - left（本机 119 - (-18) = 137），高 = h（本机 100）。
+      // 第 22 轮 m09043 教训：这里写成 1:1 会让 fit() 按正方形分配空间，
+      // 而字形横向 1.37 倍宽 ⇒ 溢出画布被裁掉，用户看到的挂点位置就偏了。
+      kind: "emoji", emoji: DEFAULTS.doll.emoji || "🧸",
+      w: (m2 ? (m2.right - m2.left) : 1), h: (m2 ? m2.h : 1), realW: real.w, realH: real.h,
+      metrics: emojiMetrics(),
+      font: "\"Segoe UI Emoji\", \"Apple Color Emoji\", \"Noto Color Emoji\", sans-serif"
+    };
+  }
+
+  /** 拉当前挂饰图片（只在路径变化时真正发起） */
+  function loadAnchorImage() {
+    const path = currentImagePath();
+    const useImage = sval("doll.dangle", "emoji") === "image";
+    if (!useImage || !path) {
+      anchorImg = null;
+      anchorImgPath = null;
+      return;
+    }
+    if (path === anchorImgPath && anchorImg) return;
+    anchorImgPath = path;
+    anchorImg = null;
+    const mk = (src) => {
+      const im = new Image();
+      im.onload = () => {
+        if (anchorImgPath !== path) return;      // 防止旧图覆盖新图
+        anchorImg = im;
+        renderAnchor();
+      };
+      im.onerror = () => { if (anchorImgPath === path) { anchorImg = null; renderAnchor(); } };
+      im.src = src;
+    };
+    const api = window.settingsApi;
+    if (api && api.readImage) {
+      api.readImage(path).then((res) => {
+        if (anchorImgPath !== path) return;
+        if (res && res.ok && res.dataUrl) mk(res.dataUrl);
+        else mk(path);                           // 读不到就退回 file:// 直读
+      }).catch(() => { if (anchorImgPath === path) mk(path); });
+    } else {
+      mk(path);
+    }
+  }
+
+  function renderAnchor() {
+    if (!anchorEls) return;
+    loadAnchorImage();
+    anchorEls.editor.render();
+  }
+
+  function buildAnchorEditor() {
+    if (!window.AnchorEditor) return null;
+    const editor = window.AnchorEditor.create({
+      get: anchorValue,
+      // 第 35 轮：编辑器现在同时管两个点，这几个是新增的取/存回调。
+      getHook: anchorValue,
+      getMass: massValue,
+      getTarget: function () { return anchorTarget; },
+      setTarget: function (t) { anchorTarget = t === "mass" ? "mass" : "hook"; },
+      setMass: function (axis, v) {
+        S.setAt(overrides, axis === "x" ? "doll.massX" : "doll.massY", v);
+        selectedPresetId = null;
+        refreshReadouts();
+        renderAnchor();
+        // 【第 38 轮 m13309】拖拽只改本地草稿，不再下发 —— 两点只能通过「应用」生效，
+        // 松手后挂饰不动；「应用」一次性下发四键 + 模拟段长并重建。
+      },
+      // 拖动质点时只重绘、不下发；松手由 setMass 走 60ms 合并通道
+      setBothMass: function (x, y) {
+        S.setAt(overrides, "doll.massX", x);
+        S.setAt(overrides, "doll.massY", y);
+        selectedPresetId = null;
+        refreshReadouts();
+        renderAnchor();
+      },
+      set: function (axis, v) {
+        S.setAt(overrides, axis === "x" ? "doll.anchorX" : "doll.anchorY", v);
+        selectedPresetId = null;
+        refreshReadouts();
+        renderAnchor();
+        // 【第 38 轮 m13309】同 setMass：拖拽只改本地草稿，不下发。
+      },
+      // 第 24 轮 m09645：拖拽一次写两个轴。这里只重绘、不下发；
+      // 编辑器在 pointerup 时会再调一次 set()，走正常的 60ms 合并通道。
+      setBoth: function (x, y) {
+        S.setAt(overrides, "doll.anchorX", x);
+        S.setAt(overrides, "doll.anchorY", y);
+        selectedPresetId = null;
+        refreshReadouts();
+        renderAnchor();
+      },
+      reset: function () {
+        // 第 35 轮：一次把挂点和质点都恢复默认（挂点 0/0 左上角、质点 0.5/0.5 居中）
+        delete overrides.doll;
+        if (!Object.keys(overrides).length) overrides = {};
+        selectedPresetId = null;
+        refreshReadouts();
+        renderAnchor();
+        // 【第 38 轮 m13309】恢复默认也只改本地草稿，不下发；点「应用」才重建。
+      },
+      // 【第 37 轮 m12496】预览图右栏的「应用」。【第 38 轮 m13309】应用 = 重建。
+      // 两个点（挂点 anchorX/Y、质点 massX/massY）只在按下这里时生效（此前拖拽即时生效，
+      // 与「模拟段长只在应用时生效」不同步），随模拟段长一次性下发并重建挂饰。
+      apply: function () {
+        const hook = anchorValue();
+        const mass = massValue();
+        S.setAt(overrides, "doll.anchorX", hook.x);
+        S.setAt(overrides, "doll.anchorY", hook.y);
+        S.setAt(overrides, "doll.massX", mass.x);
+        S.setAt(overrides, "doll.massY", mass.y);
+        const len = tailLengthFromPoints();
+        const ang = tailAngleFromPoints();
+        S.setAt(overrides, "chain.tail.length", len);
+        S.setAt(overrides, "chain.tail.angle", ang);
+        selectedPresetId = null;
+        refreshReadouts();
+        sendOverrides(function () {
+          setStatus("已应用：挂点 " + (hook.x * 100).toFixed(0) + "%/" + (hook.y * 100).toFixed(0) + "%" +
+            "，质点 " + (mass.x * 100).toFixed(0) + "%/" + (mass.y * 100).toFixed(0) + "%" +
+            "，模拟段 " + len.toFixed(1) + "px / " + Math.round(ang * 180 / Math.PI) + "°");
+        });
+      },
+      getSource: anchorSource
+    });
+    anchorEls = { editor: editor };
+    renderAnchor();
+    return editor.el;
+  }
 
   // ---------- 挂饰库管理（第 19 轮）：列表 / 重命名 / 删除 ----------
   let libEls = null;
@@ -678,7 +1058,8 @@
       const c = controls[key];
       if (!c || !c.field) continue;          // 防御：脏键不许把整个刷新打断
       if (c.field.type === "choice") {
-        c.select.value = sval(key, c.field.options[0].v);
+        const o = choiceOptions(c.field);
+        c.select.value = sval(key, o[0].v);
         c.wrap.classList.toggle("overridden", typeof S.getAt(overrides, key) === "string");
         continue;
       }
@@ -689,6 +1070,16 @@
       c.wrap.classList.toggle("overridden", typeof S.getAt(overrides, key) === "number");
     }
     refreshChrome();
+  }
+
+  /** 把「应用」按钮的禁用态与文案同步到每一条悬挂栏（第 36 轮 m12389） */
+  function paintApplyButtons(disabled, text) {
+    for (const d of allDocks()) {
+      const b = d.querySelector('[data-btn="apply"]');
+      if (!b) continue;
+      b.disabled = !!disabled;
+      if (text) b.textContent = text;
+    }
   }
 
   /** 用 applied（真正生效的值）判断哪个档位是 active；用 selectedPresetId 判断哪个是 selected */
@@ -716,11 +1107,9 @@
     if (selectedPresetId) {
       // 预览中：值先搬到滑块显示，但不写进 overrides（selectPreset 已经搬过）
       els.presetHint.textContent = S.BY_PRESET[selectedPresetId].summary;
-      els.apply.disabled = false;
-      els.apply.textContent = "应用（第 " + S.BY_PRESET[selectedPresetId].name + " 档）";
+      paintApplyButtons(false, "应用（第 " + S.BY_PRESET[selectedPresetId].name + " 档）");
     } else {
-      els.apply.disabled = true;
-      els.apply.textContent = "应用";
+      paintApplyButtons(true, "应用");
       const act = activeId ? S.BY_PRESET[activeId] : null;
       els.presetHint.textContent = act
         ? "当前生效：第 " + act.name + " 档 —— " + act.summary
@@ -823,7 +1212,10 @@
     if (!selectedPresetId) return;
     const p = S.BY_PRESET[selectedPresetId];
     const flat = S.toFlat(overrides);
-    els.apply.disabled = true;
+    for (const d of allDocks()) {
+      const b = d.querySelector('[data-btn="apply"]');
+      if (b) b.disabled = true;
+    }
     push(flat, () => {
       selectedPresetId = null;
       refreshChrome();
@@ -834,21 +1226,29 @@
   }
 
   // ---------- 恢复默认 ----------
-  els.resetAll.addEventListener("click", () => {
-    selectedPresetId = null;
-    overrides = {};
-    refreshReadouts();
-    push({}, () => {
-      setStatus("已恢复出厂默认");
-    });
-  });
-
-  els.apply.addEventListener("click", applyPending);
-
-  els.close.addEventListener("click", () => {
-    if (window.settingsApi && window.settingsApi.close) window.settingsApi.close();
-    else window.close();
-  });
+  // 第 36 轮 m12389：两个页面各有一套按钮，逐个绑，不能只绑一条底栏
+  for (const d of allDocks()) {
+    const bReset = d.querySelector('[data-btn="reset"]');
+    if (bReset) {
+      bReset.addEventListener("click", () => {
+        selectedPresetId = null;
+        overrides = {};
+        refreshReadouts();
+        push({}, () => {
+          setStatus("已恢复出厂默认");
+        });
+      });
+    }
+    const bApply = d.querySelector('[data-btn="apply"]');
+    if (bApply) bApply.addEventListener("click", applyPending);
+    const bClose = d.querySelector('[data-btn="close"]');
+    if (bClose) {
+      bClose.addEventListener("click", () => {
+        if (window.settingsApi && window.settingsApi.close) window.settingsApi.close();
+        else window.close();
+      });
+    }
+  }
 
   // ---------- 诊断记录 ----------
   // 状态只有一个来源：覆盖层每 0.5s 回推一次。面板不自己计时，
@@ -856,6 +1256,7 @@
   let recording = false;
 
   function paintRecordButton() {
+    if (!els.recordToggle) return;   // 诊断记录块没建出来时整段逻辑静默跳过
     els.recordToggle.textContent = recording ? "停止记录" : "开始记录";
     els.recordToggle.classList.toggle("recording", recording);
   }
@@ -864,6 +1265,7 @@
     if (!st) return;
     recording = st.recording === true;
     paintRecordButton();
+    if (!els.recordStatus) return;   // 记录块不存在（模板克隆失败）时只同步 recording 状态
     if (recording) {
       const sec = (st.elapsedMs || 0) / 1000;
       els.recordStatus.textContent = "记录中 " + sec.toFixed(1) + " 秒 · " + (st.count || 0) + " 条";
@@ -874,7 +1276,7 @@
     }
   }
 
-  els.recordToggle.addEventListener("click", () => {
+  if (els.recordToggle) els.recordToggle.addEventListener("click", () => {
     if (!window.settingsApi || !window.settingsApi.record) {
       setStatus("未连接到主程序");
       return;
@@ -889,7 +1291,7 @@
       recording = cmd === "start";
       paintRecordButton();
       if (recording) {
-        els.recordFile.textContent = "";
+        if (els.recordFile) els.recordFile.textContent = "";
         setStatus("开始记录");
       } else {
         setStatus("已停止，正在保存…");
@@ -904,20 +1306,23 @@
     window.settingsApi.onRecordSaved((res) => {
       if (!res) return;
       if (!res.ok) {
-        els.recordFile.textContent = "";
+        if (els.recordFile) els.recordFile.textContent = "";
         setStatus("保存失败：" + (res.error || "未知错误"), true);
         return;
       }
       // 只显示文件名，完整路径太长会把这一行撑爆
       const name = String(res.path).split(/[\\/]/).pop();
-      els.recordFile.textContent = name + " · " + res.samples + " 条 · " + Math.round(res.bytes / 1024) + " KB";
-      els.recordFile.title = res.path;
+      if (els.recordFile) els.recordFile.textContent = name + " · " + res.samples + " 条 · " + Math.round(res.bytes / 1024) + " KB";
+      if (els.recordFile) els.recordFile.title = res.path;
       setStatus("已保存到 records 目录");
     });
   }
 
   // ---------- 启动 ----------
+  // 先量 emoji 的宽高比再 build：anchorRealSize() 依赖它，量晚了预览读数的像素值会先错一帧
+  calibrateEmojiAspect();
   build();
+  syncViewport();
   buildTabs();
   buildPresets();
 
@@ -931,6 +1336,7 @@
       refreshImportRow();
       refreshLibrary();
       refreshDangleSelect();
+      renderAnchor();
       setStatus("");
     }).catch(() => refreshReadouts());
 
@@ -946,6 +1352,7 @@
       refreshImportRow();
       refreshLibrary();
       refreshDangleSelect();
+      renderAnchor();
     });
   } else {
     // 用浏览器直接打开这个 HTML 时的降级路径：只用出厂默认值把界面画出来

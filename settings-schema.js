@@ -80,7 +80,7 @@
     {
       id: "appearance",
       title: "挂饰与大小",
-      note: "换挂饰即时生效，不会重置绳子。选「自定义图片」后点下方「导入图片…」从本地选一张 JPG/PNG。",
+      note: "换挂饰即时生效，不会重置绳子。选「自定义图片」后点下方「导入图片…」从本地选一张 JPG/PNG。挂饰是刚体：只会绕吊环整体旋转，不会拉伸变形。",
       fields: [
         {
           key: "doll.dangle",
@@ -98,7 +98,7 @@
           readout: "dollPx",
           hint: "占屏幕高度的比例，最终会被夹在 56~128 像素之间。出厂 0.10。",
           min: 0.03, max: 0.25, step: 0.005, unit: ""
-        }
+        },
       ]
     },
     {
@@ -147,6 +147,29 @@
           readout: null,
           hint: "像素。出厂 2.2。",
           min: 0.5, max: 8, step: 0.1, unit: "px"
+        },
+        {
+          key: "chain.tail.enabled",
+          label: "挂饰模拟段",
+          type: "choice",
+          options: [
+            { v: "on", label: "启用（挂饰挂在 p4，朝向由 p4→p5 给）" },
+            { v: "off", label: "关闭（退回整绳连线角，第 27 轮行为）" }
+          ],
+          hint: "第 29 轮。关闭后质点数从 5 减回 4、挂点退回最后一节末端。"
+        },
+        // 【第 37 轮 m12496】挂饰模拟段长度不再由面板直接给。
+        // 它改由图片页「挂点 ↔ 质点」两点在挂饰上的距离算出来 ——
+        // 预览图上那两个点可以任意拖，长度自然跟着变。
+        // 保留一个滑块就等于有了第二个真相源，必然与拖出来的距离对不上。
+        // 键 chain.tail.length 仍必须留在白名单（见 ANCHOR_FIELDS），
+        // 否则 sanitize() 会把 settings.json 里已存的值静默丢掉。
+        {
+          key: "chain.tail.mass",
+          label: "挂饰模拟段重量",
+          readout: null,
+          hint: "末端质点相对单个绳段的质量倍率，不是克数。越大模拟段越「沉」、朝向越稳。出厂 20。",
+          min: 1, max: 50, step: 1, unit: "倍"
         }
       ]
     }
@@ -243,6 +266,29 @@
     }
   ];
 
+  // 吊环位置（第 22 轮，m08506）。
+  // 这两个值原本是 appearance 组里的两个滑块，现在由「图片页」的吊环位置编辑器直接改 ——
+  // 但仍然必须留在白名单里：sanitize 只认 FIELDS / CHOICES / STRINGS 里的键，
+  // 一旦把键从白名单里删掉，settings.json 里存的位置会被静默丢弃，
+  // 老用户升级后挂饰会自己跳回正中。所以这里保留声明、只是不再画成滑块。
+  const ANCHOR_FIELDS = [
+    { key: "doll.anchorX", min: 0, max: 1, step: 0.01 },
+    { key: "doll.anchorY", min: 0, max: 1, step: 0.01 },
+    // 第 35 轮 m12277：质点位置（预览里那个红点）。与挂点同一套归一化坐标，
+    // 同样**不**进 GROUPS（不在面板上出滑块），但必须在白名单里，否则
+    // sanitize() 会静默丢弃 settings.json 里已存的值 —— 和第 21 轮 anchorX 的坑一样。
+    { key: "doll.massX", min: 0, max: 1, step: 0.01 },
+    { key: "doll.massY", min: 0, max: 1, step: 0.01 },
+    // 第 37 轮 m12496：模拟段长度不再出滑块（改由挂点↔质点距离算出），
+    // 但键必须留在白名单 —— 实测从 FIELDS 移走后
+    // sanitize({chain:{tail:{length:26}}}) 返回的对象里 length 直接消失。
+    { key: "chain.tail.length", min: 0, max: 200, step: 1 },
+    // 第 38 轮补（m13415）：模拟段初始方向角（弧度，竖直向下=0，顺时针为正）。
+    // 由挂点→质点方向在「应用」时算出，同样只在白名单里、不出滑块。
+    // 必须登记：否则 sanitize() 会把 chain.tail.angle 静默丢掉。
+    { key: "chain.tail.angle", min: -Math.PI, max: Math.PI, step: 0.01 }
+  ];
+
   // 拍平成一维，主进程钳制时按这个顺序遍历
   const FIELDS = [];
   for (const g of GROUPS) {
@@ -251,12 +297,18 @@
       FIELDS.push(f);
     }
   }
+  for (const f of ANCHOR_FIELDS) FIELDS.push(f);
   const BY_KEY = {};
   for (const f of FIELDS) BY_KEY[f.key] = f;
   // 非数值字段：下拉选择（choice）与字符串（如本地图片路径）。
   // 数字滑块走 FIELDS；这两类单独清洗 —— sanitize 只放行枚举内的取值 / 长度受限的字符串。
   const CHOICES = [
-    { key: "doll.dangle", values: ["emoji", "image"] }
+    // sanitize() 只收 number / string，布尔值会被整条丢掉 —— 所以开关一律走 CHOICES。
+    // 面板里 "on" 渲染成勾选框，"off" 是默认。
+    { key: "doll.dangle", values: ["emoji", "image"] },
+    // 第 29 轮：挂饰模拟段开关。字段上写 type:"choice" 只决定面板渲染成下拉框，
+    // 真正能不能穿过 sanitize 取决于这里有没有登记（sanitize 只认 FIELDS/CHOICES/STRINGS）。
+    { key: "chain.tail.enabled", values: ["on", "off"] }
   ];
   const STRINGS = [
     { key: "doll.image.path", maxLen: 500 },
@@ -303,7 +355,7 @@
       let c = Math.min(f.max, Math.max(f.min, v));
       // 按 step 对齐，避免手改 JSON 写出 3300.0000001 这种值
       if (f.step > 0) c = Math.round(c / f.step) * f.step;
-      // 浮点乘法会留尾巴（0.005 的倍数可能算出 0.30000000000000004），收一下
+      // 浮点乘法会留小数尾巴（0.005 的倍数可能算出 0.30000000000000004），收一下
       c = Number(c.toFixed(10));
       setAt(out, f.key, c);
     }
@@ -355,5 +407,5 @@
     return out;
   }
 
-  return { GROUPS, PRESETS, FIELDS, BY_KEY, BY_PRESET, CHOICES, STRINGS, sanitize, toFlat, fromFlat, getAt, setAt };
+  return { GROUPS, PRESETS, FIELDS, BY_KEY, BY_PRESET, CHOICES, STRINGS, ANCHOR_FIELDS, sanitize, toFlat, fromFlat, getAt, setAt };
 });

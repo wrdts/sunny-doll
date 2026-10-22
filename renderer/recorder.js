@@ -61,7 +61,10 @@
       this.samples = [];
       this.startedWall = Date.now();
       this.startedAt = clock();
-      this._nextAt = this.startedAt;
+      // 【第 29 轮修】第一条样本要落在 startedAt + intervalMs，不能落在 startedAt 本身。
+      // 原来 _nextAt = startedAt，主循环第一帧（+16.67ms）就满足 now >= _nextAt，
+      // 于是第一条样本的 t 是 17ms 而不是 100ms，整份记录的节拍从开头就是歪的。
+      this._nextAt = this.startedAt + this.intervalMs;
       this._nextPushAt = this.startedAt + STATUS_PUSH_MS;
       this._prev = null;
       this._maxSpeed = 0;
@@ -242,6 +245,23 @@
         (r && r.cfg && r.cfg.doll) ? r.cfg.doll :
         (window.CONFIG && window.CONFIG.doll) ? window.CONFIG.doll : {};
       const ratio = dollCfg.bodyRotateRatio !== undefined ? dollCfg.bodyRotateRatio : 1;
+      // T1：视口高。只在渲染器没就绪时才用得到（见下面的 heightCss）。
+      const viewH = (typeof window !== "undefined" && window.innerHeight) ? window.innerHeight : 1;
+      // T1：复刻 doll.js 的 anchorOffset。渲染器在就抄它的 _dollWidth()，
+      // 不在就用 panel 里同名的配置兜底，保证记录能离线还原旋转原点。
+      const heightCss = r && typeof r.dollHeight === "number" ? r.dollHeight
+        : Math.max((dollCfg.heightMin !== undefined ? dollCfg.heightMin : 56),
+          Math.min((dollCfg.heightMax !== undefined ? dollCfg.heightMax : 128),
+            (dollCfg.heightRatio !== undefined ? dollCfg.heightRatio : 0.1) * viewH));
+      const dollW = (r && typeof r._dollWidth === "function") ? r._dollWidth(heightCss) : heightCss;
+      function anchorOf(d, h, w) {
+        const ax = d && d.anchorX !== undefined ? d.anchorX : 0.5;
+        const ay = d && d.anchorY !== undefined ? d.anchorY : 0.0;
+        return {
+          ox: r2(-w * (ax - 0.5)),
+          oy: r2(-Math.min((d && d.heightMax !== undefined ? d.heightMax : 128), h, ay * h))
+        };
+      }
       const rawDeg = r ? (r._bodyAngle * ratio * 180 / Math.PI) : null;
       const drawnDeg = r ? (r._bodyAngleDrawn * 180 / Math.PI) : null;
       const clamped = (typeof rawDeg === "number" && typeof drawnDeg === "number")
@@ -272,7 +292,12 @@
           ropeFx: r2(ropeFx), ropeFy: r2(ropeFy), ropeF: r2(ropeF),
           mass: r2(tail.mass)
         },
-        doll: { raw: r2(rawDeg), drawn: r2(drawnDeg), clamped: clamped }
+        doll: {
+          raw: r2(rawDeg), drawn: r2(drawnDeg), clamped: clamped,
+          // T1：图片挂点相对顶边中点的偏移（CSS px）。渲染层专属，不进物理，
+          // 但「娃娃为什么绕那个点转」只能靠这两个数还原，必须落盘。
+          anchor: anchorOf(dollCfg, heightCss, dollW)
+        }
       };
 
       if (speed > this._maxSpeed) this._maxSpeed = speed;

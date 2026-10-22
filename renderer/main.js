@@ -8,7 +8,9 @@
   // 少给一段就会全走默认值（之前只传 physics，导致 chain 段所有参数都没生效）。
   function ropeCfg() {
     const C = window.CONFIG;
-    return Object.assign({}, C.physics, C.chain);
+    // 【第 29 轮】还要把 C.tail 带进来。漏了它 RopeChain 会走 _tailLength/_tailMass
+    // 的兜底默认值（length 26 / mass 20），面板和 config.js 里改什么都不生效。
+    return Object.assign({}, C.physics, C.chain, C.tail ? { tail: C.tail } : {});
   }
   const rope = new RopeChain(ropeCfg());
 
@@ -80,7 +82,14 @@
     const len = renderer.ropeLength;
     // segments 是【段数】，rebuild() 的第二个参数是【质点个数】= 段数 + 1
     const segs = (window.CONFIG.chain && window.CONFIG.chain.segments) || 2;
-    const nodeCount = segs + 1;
+    // 【第 29 轮】挂饰模拟段会额外追加一个质点（p5），所以实际质点数是 segs+1+模拟段。
+    // 原来只算 segs+1，开关模拟段时 rope.count 变了但这里没变 ⇒ 判据不成立 ⇒ 不重建链，
+    // 表现为「面板上开了模拟段，但绳子上什么都没有」。
+    const tailOn = !!(window.CONFIG.chain && window.CONFIG.chain.tail &&
+                      window.CONFIG.chain.tail.enabled !== false &&
+                      window.CONFIG.chain.tail.enabled !== "off" &&
+                      window.CONFIG.chain.tail.length > 0);
+    const nodeCount = segs + 1 + (tailOn ? 1 : 0);
     // 这里必须和 nodeCount 比，不能和 segs 比 —— rope.count 是【质点个数】，
     // 写成 rope.count !== segs 会让条件恒为 true，每次 resize 都白白重建一次绳子。
     if (rope.count !== nodeCount || Math.abs(rope.length - len) > 0.5) {
@@ -89,6 +98,9 @@
       rope.rebuild(len, nodeCount);
       rope.resetVertically();
     }
+    // 绳子末端延伸量跟着配置走（tailPoint 读实例上的这份值，够不到 CONFIG）
+    rope.setOverlap(window.CONFIG.rope ? window.CONFIG.rope.overlap : 0);
+
     // 坐标系变了，重定位避免假冲量
     updateAttach();
     rope.teleport(attach.x, attach.y);
@@ -294,6 +306,16 @@
     // 如果直接往 CONFIG 上叠，用户把滑块拖回出厂值后旧值会永远赖着不走。
     deepAssign(window.CONFIG, JSON.parse(JSON.stringify(pristineDefaults)));
     deepAssign(window.CONFIG, overrides);
+    // 【第 29 轮】挂饰模拟段开关归一化。
+    // 面板的下拉框提交的是字符串 "on"/"off"（sanitize 只收 number/string，布尔会被整条丢掉），
+    // 而 rope.js 里判断的是真假值。这里统一折成布尔，下游就不用到处认三种形态。
+    if (window.CONFIG.chain && window.CONFIG.chain.tail) {
+      const t = window.CONFIG.chain.tail;
+      t.enabled = !(t.enabled === false || t.enabled === "off" || t.enabled === 0);
+    }
+    // overlap 只在实例上留一份，这里必须显式同步 —— 否则改完绳宽/绳色后
+    // 吊环会停在旧位置（tailPoint 用的是建链时的那个值）
+    if (rope.setOverlap) rope.setOverlap(window.CONFIG.rope ? window.CONFIG.rope.overlap : 0);
     syncCfg();
 
     // 【不要调 applySize()】它结尾无条件 teleport + resetVertically，
@@ -301,7 +323,12 @@
     // 只有段数或绳长真的变了才需要重建链。
     const len = renderer.ropeLength;
     const segs = (window.CONFIG.chain && window.CONFIG.chain.segments) || 2;
-    const nodeCount = segs + 1;
+    // 【第 29 轮】挂饰模拟段会额外追加一个质点（p5），所以实际质点数是 segs+1+模拟段。
+    // 原来只算 segs+1，开关模拟段时 rope.count 变了但这里没变 ⇒ 判据不成立 ⇒ 不重建链。
+    const tailOn = !!(window.CONFIG.chain && window.CONFIG.chain.tail &&
+                       window.CONFIG.chain.tail.enabled !== false &&
+                      window.CONFIG.chain.tail.length > 0);
+    const nodeCount = segs + 1 + (tailOn ? 1 : 0);
     if (rope.count !== nodeCount || Math.abs(rope.length - len) > 0.5) {
       updateAttach();
       rope.setAnchor(attach.x, attach.y);

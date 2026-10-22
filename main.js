@@ -467,6 +467,25 @@ function registerRecordIpc() {
 function registerSettingsIpc() {
   ipcMain.handle("settings:get", () => ({ ok: true, overrides: currentOverrides }));
 
+  // 设置面板要算「挂饰在覆盖层里到底多大」，而 renderer/doll.js 的 dollHeight 走的是
+  // cssH * heightRatio（cssH = 覆盖层 innerHeight），不是屏幕高。两者差一个任务栏，
+  // 面板若自己拿 window.screen.height 去算，读数就跟线上差几像素到几十像素。
+  // 第 22 轮 m09043：这就是「坐标位置与实际挂钩位置存在偏移」的真因。
+  ipcMain.handle("settings:viewport", () => {
+    // 【第 37 轮 m12496 修】这里原来读 win.getContentBounds()，但 win 是覆盖层窗口，
+    // 而 settings:viewport 这个名字容易被理解成"设置窗口的视口"——
+    // 实测设置窗口是 620x800（content 763），覆盖层是全屏 864，
+    // 两边取到的高度差 101px，面板算出来的 dollPx 就会比线上小 13%，
+    // 于是"挂点↔质点"的距离换算出来的模拟段长度整条偏短。
+    // 正确来源是显示器 bounds —— 与 createWindow() 里铺满主屏用的是同一个值。
+    try {
+      const d = screen.getPrimaryDisplay();
+      return { ok: true, width: d.bounds.width, height: d.bounds.height };
+    } catch (err) {
+      return { ok: false, width: 0, height: 0 };
+    }
+  });
+
   ipcMain.handle("settings:set", (_e, values) => {
     // 清洗放在主进程：面板只能产生合法值，但 settings.json 是可以手改的，
     // 一个 NaN 就足以让整条 Verlet 链变 NaN。范围与步长定义在 settings-schema.js。
@@ -502,6 +521,31 @@ function registerSettingsIpc() {
       const dest = path.join(dir, "dangle-" + stamp + ext);
       fs.copyFileSync(file, dest);
       return { ok: true, path: dest, dataUrl };
+    } catch (err) {
+      return { ok: false, error: (err && err.message) ? err.message : String(err) };
+    }
+  });
+
+  // 读一张挂饰图片给设置面板画缩略图（第 22 轮）。护栏与 delete-dangle 完全相同：
+  // 只放行 danglesDir 内的文件，且必须真的是文件 —— 防止把任意磁盘路径读成 dataUrl。
+  // 返回的 w/h 是面板自己判断"缩略图上哪个像素对应图片哪个点"用的，
+  // 所以主进程不猜尺寸，只老实传回字节。
+  ipcMain.handle("settings:read-image", (_e, payload) => {
+    try {
+      const p = payload && typeof payload.path === "string" ? payload.path : "";
+      if (!p) return { ok: false, error: "缺少路径" };
+      const dir = danglesDir();
+      const resolved = path.resolve(p);
+      if (path.dirname(resolved).toLowerCase() !== path.resolve(dir).toLowerCase()) {
+        return { ok: false, error: "只能读取挂饰库内的文件" };
+      }
+      if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+        return { ok: false, error: "文件不存在" };
+      }
+      const ext = path.extname(resolved).toLowerCase();
+      const mime = (ext === ".png") ? "image/png" : "image/jpeg";
+      const dataUrl = "data:" + mime + ";base64," + fs.readFileSync(resolved).toString("base64");
+      return { ok: true, dataUrl };
     } catch (err) {
       return { ok: false, error: (err && err.message) ? err.message : String(err) };
     }

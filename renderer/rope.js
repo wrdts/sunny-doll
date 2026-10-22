@@ -45,10 +45,21 @@
 
 var TAU = Math.PI * 2;
 
+// ★ 未闭合距离约束的松弛（slack）每步收回比例（第 21 轮 T1 修正）。
+// 只对最后一节生效，见 _limitLength。取 0.25 是因为一个固定子步只有 1/240s，
+// 一帧（1/60s）内会跑 4 个子步，合计收回约 1-(0.75)^4 = 68% —— 肉眼可见的"贴回"，
+// 又不会因为一次性拉直而在挂饰上产生可见跳变。
+var SLACK_RATE = 0.25;
+
 class RopeChain {
   constructor(cfg) {
     this.cfg = cfg || {};
+    // 显式记一份 overlap：设置面板会整份替换配置对象，
+    // 记在实例上就不用每帧再去 cfg 里翻。setOverlap 由 main.js 的 applySettings 同步。
+    this.overlap = (cfg && cfg.overlap) || 0;
     this.points = [];
+    // 折线总长超出自然长度的部分（px），由 _limitLength 逐步收回
+    this.slack = 0;
     this.restLen = 1;
     this.length = 100;
     this.anchorX = 0;
@@ -79,13 +90,42 @@ class RopeChain {
     this.restLen = this.length / (n - 1);
 
     const pts = [];
+    // 第 29 轮：挂饰模拟段（原称「尾巴段」，第 31 轮 m11899 改名）。count 仍表示「主体质点个数 p1..pn」，模拟段是最后一个额外点。
+    // segments=3 => 主体 4 个质点，模拟段再加 1 个（p5），共 5 个。
+    //
+    // 【关键：模拟段是「额外加的」，不是「从总长里切出来的」】
+    // 第一版把它从 this.length 里切走（mainRest = (length - tailLen)/(n-1)），
+    // 线上 total=60.5px、tail=52 时主体段只剩 2.8px，整个 PBD 链失稳：
+    // 小驱动 ±40px 下主体 tip 峰值从 74° 飙到 178°，模拟段有 46% 的帧朝天。
+    // 现在主体段长恒为 length/(n-1)，与有没有模拟段无关，模拟段接在后面额外伸出去。
+    const tailLen = this._tailLength();
+    const mainRest = this.length / (n - 1);
+    this.restLen = mainRest;
+    let curY = this.anchorY;
     for (let i = 0; i < n; i++) {
-      const y = this.anchorY + this.restLen * i;
       pts.push({
-        x: this.anchorX, y: y,
-        px: this.anchorX, py: y,
+        x: this.anchorX, y: curY,
+        px: this.anchorX, py: curY,
         mass: this._massAt(i, n),
         invMass: 0
+      });
+      curY += mainRest;
+    }
+    if (tailLen > 0) {
+      // p5：从 p4 沿 tail.angle 方向伸出 tailLen。
+      // 【第 38 轮补，m13415】出厂 angle=0（竖直向下，与旧版一致）；
+      // 面板「应用」时按挂点→质点方向重设 —— 初始状态（未物理运算）下 p5
+      // 精确落在图片上 (massX,massY) 那个点，预览区与实际挂件一致。
+      // 物理开始后 p5 由求解器接管，angle 不再约束摆动。
+      const ta = this._tailAngle();
+      const tx = this.anchorX + Math.sin(ta) * tailLen;
+      const ty = curY - mainRest + Math.cos(ta) * tailLen;
+      pts.push({
+        x: tx, y: ty,
+        px: tx, py: ty,
+        mass: this._tailMass(),
+        invMass: 0,
+        isTail: true
       });
     }
     this.points = pts;
@@ -102,6 +142,68 @@ class RopeChain {
   }
 
   /** 质量分布：靠近支点轻、靠近娃娃重，甩起来更像真实的绳+摆锤 */
+  /** 挂饰模拟段的长度（像素）。0 = 不加。第 29 轮，第 31 轮改名 */
+  _tailLength() {
+    const t = this.cfg && this.cfg.tail;
+    // 【第 29 轮】enabled 三种形态都要认：
+    //   · false / "off" ：面板下拉框存的是字符串，sanitize 只收 string，所以是 "off"；
+    //   · true / "on"   ：同上；
+    //   · 未定义        ：老 settings.json 里没有这个键，按 config.js 的出厂值走。
+    // 只写 t.enabled === false 会让面板的 "off" 完全失效（字符串不等于 false）。
+    if (!t) return 0;
+    if (t.enabled === false || t.enabled === "off" || t.enabled === 0) return 0;
+    const v = t.length;
+    return isFinite(v) && v > 0 ? v : 0;
+  }
+
+  /** 挂饰模拟段末端质点(p5)的质量倍率。默认 20 = 单个绳段的 20 倍（第 29 轮 m11260 定标） */
+  _tailMass() {
+    const t = this.cfg && this.cfg.tail;
+    const m = t && t.mass !== undefined ? t.mass : 20;
+    return isFinite(m) && m > 0 ? m : 20;
+  }
+
+  /** 模拟段的配置方向角（弧度，竖直向下=0，顺时针为正）。【第 38 轮补 m13415】 */
+  _tailAngle() {
+    const t = this.cfg && this.cfg.tail;
+    const a = t && t.angle !== undefined ? t.angle : 0;
+    return isFinite(a) ? a : 0;
+  }
+
+  /** 挂饰模拟段朝向（弧度）。给挂饰的旋转用：p4 -> p5 */
+  get tailAngle() {
+    const pts = this.points;
+    const n = pts.length;
+    if (n < 2) return 0;
+    const a = pts[n - 2];
+    const b = pts[n - 1];
+    return Math.atan2(b.x - a.x, b.y - a.y);
+  }
+
+  /**
+   * 挂饰挂点。第 31 轮（m11899）：**严格等于 p4**，不再沿 p4->p5 偏移 overlap。
+   *
+   * 用户原话：「小熊挂在了 p5 上，而非挂饰模拟段的起始位置 p4」。
+   * 之前这里返回 p4 + overlap 沿 p4->p5，而 doll.js 又去读 tailPoint（p5 + overlap），
+   * 两个点都不是 p4，挂饰看起来就像挂在下面那一段的末端。
+   *
+   * 现在：有挂饰模拟段时就是 p4 坐标本身（不偏移）；没有时退回 tailPoint（绳端）。
+   * 吊环（rope.loopRadius）与挂饰的旋转支点都用这个点。
+   */
+  get hangPoint() {
+    const pts = this.points;
+    const n = pts.length;
+    if (n === 0) return { x: this.anchorX, y: this.anchorY };
+    if (!pts[n - 1].isTail) return this.tailPoint;
+    return { x: pts[n - 2].x, y: pts[n - 2].y };
+  }
+
+  /** 挂饰模拟段是否启用 */
+  get hasTail() {
+    const pts = this.points;
+    return pts.length > 0 && !!pts[pts.length - 1].isTail;
+  }
+
   _massAt(i, n) {
     if (i === 0) return 1;
     const tailHeavy = this.cfg.tailMass !== undefined ? this.cfg.tailMass : 1.6;
@@ -169,11 +271,24 @@ class RopeChain {
       this.anchorY = 0;
     }
     const pts = this.points;
+    // 第 29 轮：挂饰模拟段比主体段长，不能再用 restLen*i 累加。
+    // 第 38 轮补（m13415）：末段（模拟段）若存在，沿 tail.angle 方向摆放，
+    // 与 rebuild 的初值保持同一约定 —— resetVertically 之后 p5 仍落在图片质点上。
+    const hasTail = pts.length > 1 && !!pts[pts.length - 1].isTail;
+    let cy = this.anchorY;
     for (let i = 0; i < pts.length; i++) {
       const p = pts[i];
-      p.x = this.anchorX;
-      p.y = this.anchorY + this.restLen * i;
+      if (hasTail && i === pts.length - 1) {
+        const ta = this._tailAngle();
+        const len = this._tailLength() || this._restOf(i - 1);
+        p.x = this.anchorX + Math.sin(ta) * len;
+        p.y = cy - this._restOf(i - 1) + Math.cos(ta) * len;
+      } else {
+        p.x = this.anchorX;
+        p.y = cy;
+      }
       p.px = p.x; p.py = p.y;
+      cy += this._restOf(i);
     }
     this.accumulator = 0;
     this._prevAnchorX = this.anchorX;
@@ -464,8 +579,10 @@ class RopeChain {
 
   _solveConstraints(stiffness) {
     const pts = this.points;
-    const rest = this.restLen;
     for (let i = 0; i < pts.length - 1; i++) {
+      // 第 29 轮：每段用自己的 rest。挂饰模拟段（p4->p5）比主体段长得多，
+      // 用统一 restLen 会把它反复拽回 12.67px，模拟段就完全不起作用。
+      const rest = this._restOf(i);
       const a = pts[i];
       const b = pts[i + 1];
       const wa = a.invMass;
@@ -496,6 +613,23 @@ class RopeChain {
     }
   }
 
+  /**
+   * 该索引所在段的自然长度。第 29 轮：挂饰模拟段是独立一段，长度与主体不同。
+   * i = 起点质点的下标，段 i 连接 pts[i] 与 pts[i+1]。
+   */
+  _restOf(i) {
+    const pts = this.points;
+    if (pts[i + 1] && pts[i + 1].isTail) return this._tailRest();
+    return this.restLen;
+  }
+
+  /** 挂饰模拟段（p4->p5）的自然长度 */
+  _tailRest() {
+    const t = this.cfg && this.cfg.tail;
+    const v = t && t.length;
+    return isFinite(v) && v > 0 ? v : this.restLen;
+  }
+
   /** 相邻两节长度不能超过 rest * maxStretch（单向缩短，只钳不拉） */
   _limitLength(maxStretch) {
     const pts = this.points;
@@ -503,6 +637,31 @@ class RopeChain {
     const limit = rest * maxStretch;
     let stretchSum = 0;
     let segCount = 0;
+
+    // ★ 松弛量（slack，第 21 轮 T1 修正）
+    //
+    // 问题：约束只限制「每段不超过 rest * maxStretch」，从不把段推回 rest。
+    // 绳端被挂饰拽、又被弯曲约束折着，段长会永久停在 > rest 的位置
+    // （实测每段多 0.0~0.3%），挂饰挂在最后一节的**端点**上，
+    // 这点松弛会直接变成「挂饰离挂点越来越远」，用户看到的是娃娃往下掉。
+    //
+    // 修法：把总松弛量记在 this.slack 里，每步只从**最后一节**收回一丁点。
+    // 不对所有段动手：中间段各有绕圈自由度，一起收会互相打架。
+    const last = pts.length - 1;
+    if (last >= 1 && this.slack > 0) {
+      const a = pts[last - 1];
+      const b = pts[last];
+      const d = Math.hypot(b.x - a.x, b.y - a.y);
+      const restLast = this._restOf(last - 1);
+      if (d > restLast + 1e-6) {
+        const want = Math.min(this.slack * SLACK_RATE, d - restLast);
+        const ux = (b.x - a.x) / d;
+        const uy = (b.y - a.y) / d;
+        b.x -= ux * want;
+        b.y -= uy * want;
+        this.slack = Math.max(0, this.slack - want);
+      }
+    }
 
     for (let i = 0; i < pts.length - 1; i++) {
       const a = pts[i];
@@ -512,15 +671,17 @@ class RopeChain {
       const d = Math.hypot(dx, dy);
       if (d < 1e-6) continue;
 
-      stretchSum += d / rest;
+      const segRest = this._restOf(i);
+      const segLimit = segRest * maxStretch;
+      stretchSum += d / segRest;
       segCount++;
 
-      if (d > limit) {
+      if (d > segLimit) {
         const wa = a.invMass;
         const wb = b.invMass;
         const wsum = wa + wb;
         if (wsum <= 0) continue;
-        const corr = (d - limit) / (d * wsum);
+        const corr = (d - segLimit) / (d * wsum);
         a.x += dx * corr * wa;
         a.y += dy * corr * wa;
         b.x -= dx * corr * wb;
@@ -529,6 +690,11 @@ class RopeChain {
     }
 
     if (segCount > 0) {
+      // 累计松弛 = 实际折线长 - 自然长度。约束保证 >= 0，这里只做浮点护栏。
+      // 第 29 轮：自然总长必须按段累加，模拟段比主体段长得多，不能乘段数。
+      let natural = 0;
+      for (let i = 0; i < pts.length - 1; i++) natural += this._restOf(i);
+      this.slack = Math.max(0, this.polylineLength - natural);
       const ratio = stretchSum / segCount;
       this.tension = Math.min(1, Math.max(0, (ratio - 1) / Math.max(0.01, maxStretch - 1)));
     }
@@ -664,6 +830,36 @@ class RopeChain {
       total += Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
     }
     return total;
+  }
+
+  /**
+   * ★ 挂饰的挂点（T1 修正，第 21 轮）：最后一节的**末端点**。
+   *
+   * 与 tipX/tipY 的区别：tip 是最后一个**质点**，而绘制绳子时末端还要沿
+   * 最后一节方向再延伸 rope.overlap 像素（伸进挂饰内部遮住缝隙，见 doll.js
+   * 的 _drawRope）。柔性弯曲允许末节方向与整绳连线角不同，所以
+   * 「绳子实际画到哪里」和「最后一个质点在哪里」是两个点，差 overlap 像素。
+   *
+   * 挂饰挂在最后一段绳的**末尾**，所以旋转枢轴必须用这个点，不能用 tip。
+   * 真实绳长恒定 => 这个点到支点的距离恒等于 length（见下方 _slackNode），
+   * 因此它不会因为弯曲约束而"缩进"一段。
+   */
+  get tailPoint() {
+    const pts = this.points;
+    const n = pts.length;
+    if (n === 0) return { x: this.anchorX, y: this.anchorY };
+    if (n === 1) return { x: pts[0].x, y: pts[0].y };
+    const a = pts[n - 2];
+    const b = pts[n - 1];
+    let dx = b.x - a.x, dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ex = this.overlap || 0;
+    return { x: b.x + (dx / len) * ex, y: b.y + (dy / len) * ex };
+  }
+
+  /** 绳子末端延伸量（伸进挂饰内部遮住缝隙），与 config.rope.overlap 同义 */
+  setOverlap(px) {
+    this.overlap = isFinite(px) ? Math.max(0, px) : 0;
   }
 
   /** 质点数组（从支点到绳端），画绳子用 */

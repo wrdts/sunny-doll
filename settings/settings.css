@@ -198,6 +198,146 @@ body {
   border-bottom-color: #6ea8f0;
 }
 
+/* ---------- 吊环位置编辑器（第 22 轮，m08506） ---------- */
+/* 左右两栏：左 180px 固定方框放预览画布，右自适应放读数与四向微调。
+   .anchor-stage 必须 position:relative，.anchor-empty 才能绝对居中盖住画布。 */
+.anchor-editor {
+  margin: 14px 0 6px;
+}
+
+/* 第 35 轮 m12277：标签 + 「挂点/质点」下拉框同一行 */
+.anchor-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.anchor-top .label-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.anchor-picker {
+  flex: 0 0 auto;
+  width: auto !important;
+  min-width: 132px;
+  margin-top: 0 !important;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+/* 图例：蓝=挂点、红=质点、白线=模拟段 */
+.anchor-legend {
+  display: flex;
+  gap: 12px;
+  font-size: 11.5px;
+  color: #8b93a5;
+}
+.anchor-legend .lg {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.anchor-legend .lg::before {
+  content: "";
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+}
+.anchor-legend .lg-hook { color: #5aa9ff; }
+.anchor-legend .lg-mass { color: #ff6b6b; }
+.anchor-legend .lg-seg {
+  color: #cfd6e4;
+}
+.anchor-legend .lg-seg::before {
+  width: 16px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.35);
+  border: none;
+}
+.anchor-read-other {
+  color: #7c8794;
+  font-size: 11.5px;
+}
+
+.anchor-body {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  margin-top: 8px;
+}
+
+.anchor-stage {
+  position: relative;
+  flex: 0 0 220px;
+  width: 220px;
+  height: 220px;
+  border-radius: 12px;
+  border: 1px solid #2f3742;
+  background: #10141a;
+  overflow: hidden;
+}
+
+.anchor-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* 第 24 轮 m09645：可以在预览图上直接把吊环拖到想要的位置 */
+  touch-action: none;   /* 触控板上拖动时不要被滚动抢走 */
+  cursor: grab;
+}
+
+.anchor-canvas.over-hook {
+  cursor: grab;
+}
+
+.anchor-canvas.dragging {
+  cursor: grabbing;
+}
+
+.anchor-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: #7c8794;
+  pointer-events: none;
+}
+
+.anchor-side {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.anchor-read {
+  font-size: 12px;
+  color: #aab4c0;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 【第 37 轮补 2，m12817】预览角度滑杆：只是观察工具，不落盘 */
+  align-self: flex-start;
+  padding: 4px 12px;
+  font-size: 12px;
+}
+
+/* 第 37 轮 m12496：预览图右栏的「应用」—— 把挂点/质点/模拟段参数真正下发 */
+.anchor-apply {
+  align-self: flex-start;
+  padding: 5px 18px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 /* ---------- 参数组 ---------- */
 .groups {
   flex: 1 1 auto;
@@ -229,6 +369,11 @@ body {
 
 .field {
   padding: 9px 0 11px;
+}
+
+/* 每个参数组的第一个字段：被滚到顶部时标签要能看见（第 22 轮） */
+.group > .field:first-of-type {
+  padding-top: 14px;
 }
 .field.overridden .label-text::after {
   content: "已改";
@@ -302,12 +447,14 @@ input[type="range"]:active::-webkit-slider-thumb { background: #a9d0ff; }
 }
 
 /* ---------- 诊断记录 ---------- */
-/* 和 .head / .foot 一样是 flex:none 的固定块，只有 .groups 滚动，
-   所以这一块永远不会被参数列表挤到屏幕外。 */
+/* 第 36 轮 m12389：从全局底栏挪回「物理」页末尾的常规区域。
+   它现在在 .groups 内部（物理页 section 的最后一个子块），
+   所以跟着参数列表一起滚动，不再固定在屏幕底部。 */
 .recorder {
-  flex: none;
-  padding: 12px 22px 14px;
-  border-top: 1px solid #262a33;
+  margin: 18px 0 4px;
+  padding: 12px 14px 14px;
+  border: 1px solid #262a33;
+  border-radius: 8px;
   background: #1a1d24;
 }
 .recorder-top {
@@ -365,7 +512,10 @@ input[type="range"]:active::-webkit-slider-thumb { background: #a9d0ff; }
   min-width: 0;
 }
 
-/* ---------- 底部 ---------- */
+/* ---------- 底部悬挂栏（第 36 轮 m12389：每页一条，按钮靠右） ---------- */
+/* 之前是全局唯一的一条底栏。现在「挂点与绳索」「物理」各有一条，
+   .groups 滚动、悬挂栏固定 —— 仍然是 flex:none，所以页脚永远可见。
+   .status 用 flex:1 把按钮全部推到右边。 */
 .foot {
   display: flex;
   align-items: center;
